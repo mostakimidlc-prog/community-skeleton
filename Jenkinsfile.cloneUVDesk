@@ -1,0 +1,26 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                script {
+                    sh '''
+                        echo "Creating project directory if not exists..."
+                        mkdir -p /home/mostakim/projects
+
+                        echo "Cloning repository..."
+                        if [ -d "/home/mostakim/projects/community-skeleton" ]; then
+                            echo "Repository already exists. Pulling latest changes..."
+                            cd /home/mostakim/projects/community-skeleton
+                            git pull
+                        else
+                            git clone https://github.com/mostakimidlc-prog/community-skeleton.git /home/mostakim/projects/community-skeleton
+                        fi
+                    '''
+                }
+            }
+        }
+    }
+}
+

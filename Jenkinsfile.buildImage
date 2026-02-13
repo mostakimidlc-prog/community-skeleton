@@ -1,0 +1,63 @@
+pipeline {
+    agent any
+
+    environment {
+        PROJECT_DIR = "/home/mostakim/projects/community-skeleton"
+        IMAGE_NAME = "mostakim/uvdesk"
+        IMAGE_TAG = "latest"
+        PLATFORM = "linux/amd64"
+    }
+
+    stages {
+
+        stage('Verify Docker & Buildx') {
+            steps {
+                sh '''
+                    docker version
+                    docker buildx version || true
+                '''
+            }
+        }
+
+        stage('Create Buildx Builder') {
+            steps {
+                sh '''
+                    docker buildx create --name mybuilder --use || true
+                    docker buildx inspect --bootstrap
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    cd ${PROJECT_DIR}
+
+                    docker buildx build \
+                        --platform ${PLATFORM} \
+                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                        --load \
+                        .
+                '''
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+                sh '''
+                    docker images | grep uvdesk
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Docker image built successfully!"
+        }
+        failure {
+            echo "Build failed. Check logs."
+        }
+    }
+}
+
