@@ -3,7 +3,7 @@ LABEL maintainer="support@uvdesk.com"
 
 ENV GOSU_VERSION=1.11
 
-# Install base supplementary packages (WITHOUT mysql-server)
+# Install base supplementary packages (WITHOUT mysql-server, WITH redis extension)
 RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y software-properties-common && \
@@ -17,6 +17,7 @@ RUN apt-get update && \
         unzip \
         apache2 \
         mysql-client \
+        redis-tools \
         php8.1 \
         libapache2-mod-php8.1 \
         php8.1-common \
@@ -25,6 +26,10 @@ RUN apt-get update && \
         php8.1-mysql \
         php8.1-mailparse \
         php8.1-curl \
+        php8.1-redis \
+        php8.1-mbstring \
+        php8.1-zip \
+        php8.1-gd \
         ca-certificates \
         gnupg2 dirmngr && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -37,13 +42,13 @@ COPY ./.docker/config/apache2/env /etc/apache2/envvars
 COPY ./.docker/config/apache2/httpd.conf /etc/apache2/apache2.conf
 COPY ./.docker/config/apache2/vhost.conf /etc/apache2/sites-available/000-default.conf
 
-# Copy entrypoint script and source code
-COPY ./.docker/bash/uvdesk-entrypoint.sh /usr/local/bin/
-COPY . /var/www/uvdesk/
+# Copy source code (excluding .env which will be generated)
+COPY --chown=uvdesk:uvdesk . /var/www/uvdesk/
 
 # Update Apache configurations and enable modules
 RUN a2enmod php8.1 rewrite && \
-    chmod +x /usr/local/bin/uvdesk-entrypoint.sh
+    a2enmod headers && \
+    a2enmod expires
 
 # Install GOSU for stepping down from root
 RUN dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" && \
@@ -71,19 +76,37 @@ RUN wget -O /usr/local/bin/composer.php "https://getcomposer.org/installer" && \
 # Set working directory
 WORKDIR /var/www/uvdesk
 
-# Install Composer dependencies
-RUN cd /var/www/uvdesk/ && composer install --no-interaction --no-scripts
+# Install Composer dependencies as uvdesk user
+RUN chown -R uvdesk:uvdesk /var/www/uvdesk && \
+    gosu uvdesk composer install --no-interaction --no-scripts --prefer-dist
 
-# Set correct permissions for UVDesk files
-RUN mkdir -p /var/www/uvdesk/{var,config,public,migrations} \
-    && chown -R uvdesk:uvdesk /var/www/uvdesk \
-    && chmod -R 775 /var/www/uvdesk || true
+# Install predis (Redis client for PHP)
+RUN gosu uvdesk composer require predis/predis --no-interaction --no-scripts
+
+# Set correct permissions for UVDesk files and directories
+RUN mkdir -p /var/www/uvdesk/var/cache \
+    /var/www/uvdesk/var/log \
+    /var/www/uvdesk/var/sessions \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public \
+    /var/www/uvdesk/migrations && \
+    chown -R uvdesk:uvdesk /var/www/uvdesk && \
+    chmod -R 775 /var/www/uvdesk/var \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public
 
 # Set up Apache log and runtime directories with proper permissions
-RUN mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2 \
-    && touch /var/log/apache2/error.log /var/log/apache2/access.log \
-    && chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2 \
-    && chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
+RUN mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
+    touch /var/log/apache2/error.log /var/log/apache2/access.log && \
+    chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
+    chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
+
+# Copy and set up entrypoint script
+COPY ./.docker/bash/uvdesk-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/uvdesk-entrypoint.sh
+
+# Expose port 80
+EXPOSE 80
 
 # Entry point for the container
 ENTRYPOINT ["/usr/local/bin/uvdesk-entrypoint.sh"]

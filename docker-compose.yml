@@ -5,6 +5,7 @@ services:
     image: mysql:8.0
     container_name: uvdesk-db
     restart: always
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_DATABASE: uvdesk
@@ -20,31 +21,101 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - uvdesk-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: uvdesk-redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass uvdesk_redis_pass
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "uvdesk_redis_pass", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - uvdesk-network
 
   app:
-    image: mostakim/uvdesk:latest
+    image: mostakim/uvdesk:latest  # Using pre-built image from Jenkins
     container_name: uvdesk-app
     restart: always
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
+      # Application Configuration
       APP_NAME: UVDesk
-      APP_ENV: local
+      APP_ENV: dev
       APP_DEBUG: 'true'
       APP_URL: http://localhost:8082
+      APP_SECRET: b2f75c4f0c97cc38f56deae639716055e8a888707d7e5bf9248e5465eef971b3
+
+      # Database Configuration
       DB_CONNECTION: mysql
       DB_HOST: db
       DB_PORT: 3306
       DB_DATABASE: uvdesk
       DB_USERNAME: uvdesk
       DB_PASSWORD: uvdesk_password
+      DATABASE_URL: "mysql://uvdesk:uvdesk_password@db:3306/uvdesk?serverVersion=8.0"
+
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: uvdesk_redis_pass
+      REDIS_DB: 0
+      REDIS_URL: "redis://:uvdesk_redis_pass@redis:6379/0"
+
+      # Cache Configuration (Use file system initially, can switch to redis after setup)
+      CACHE_DRIVER: file
+      CACHE_PREFIX: uvdesk_cache
+
+      # Session Configuration (Use file system initially, can switch to redis after setup)
+      SESSION_DRIVER: file
+      SESSION_LIFETIME: 120
+
+      # Queue Configuration (Use sync initially, can switch to redis after setup)
+      QUEUE_CONNECTION: sync
+      QUEUE_DRIVER: sync
+
+      # Mailer Configuration (optional)
+      MAILER_DSN: "null://null"
+
+      # Cookie Configuration
       UV_SESSION_COOKIE_LIFETIME: 3600
+
+      # Timezone
+      TZ: UTC
     ports:
       - "8082:80"
-    # volumes:
-    #   - ./:/var/www/uvdesk
-    # Note: Volume mount disabled to preserve vendor/ directory from image
+    volumes:
+      - app_var:/var/www/uvdesk/var
+      - app_config:/var/www/uvdesk/config
+      - app_public:/var/www/uvdesk/public
+    networks:
+      - uvdesk-network
 
 volumes:
   db_data:
+    driver: local
+  redis_data:
+    driver: local
+  app_var:
+    driver: local
+  app_config:
+    driver: local
+  app_public:
+    driver: local
+
+networks:
+  uvdesk-network:
+    driver: bridge

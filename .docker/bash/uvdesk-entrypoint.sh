@@ -1,84 +1,129 @@
 #!/bin/bash
 set -e
 
-# -----------------------------
-# Color codes for output
-# -----------------------------
-COLOR_NC='\033[0m'
-COLOR_RED='\033[0;31m'
-COLOR_GREEN='\033[0;32m'
-COLOR_LIGHT_YELLOW='\033[1;33m'
+echo "=========================================="
+echo "UVDesk Container Starting..."
+echo "=========================================="
 
-# -----------------------------
-# Required environment variables
-# -----------------------------
-: "${DB_HOST:=db}"
-: "${DB_PORT:=3306}"
-: "${DB_DATABASE:=uvdesk}"
-: "${DB_USERNAME:=uvdesk}"
-: "${DB_PASSWORD:=uvdesk_password}"
-: "${UV_SESSION_COOKIE_LIFETIME:=3600}"
+# Function to wait for database
+wait_for_db() {
+    echo "Waiting for MySQL database to be ready..."
+    local max_attempts=60
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USERNAME" -p"$DB_PASSWORD" --silent 2>/dev/null; then
+            echo "✓ Database is ready!"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "  Waiting for database... ($attempt/$max_attempts)"
+        sleep 2
+    done
+    
+    echo "✗ Database connection timeout!"
+    return 1
+}
 
-# -----------------------------
-# Wait for external MySQL database to be ready
-# -----------------------------
-echo -e "${COLOR_GREEN}Waiting for database at ${DB_HOST}:${DB_PORT}...${COLOR_NC}"
+# Function to wait for Redis
+wait_for_redis() {
+    echo "Waiting for Redis to be ready..."
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping > /dev/null 2>&1; then
+            echo "✓ Redis is ready!"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "  Waiting for Redis... ($attempt/$max_attempts)"
+        sleep 2
+    done
+    
+    echo "⚠ Redis connection timeout! Continuing anyway..."
+    return 0
+}
 
-MAX_TRIES=30
-COUNT=0
+# Wait for services
+wait_for_db
+wait_for_redis
 
-while [ $COUNT -lt $MAX_TRIES ]; do
-    if mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USERNAME" -p"$DB_PASSWORD" --silent 2>/dev/null; then
-        echo -e "${COLOR_GREEN}Database is ready!${COLOR_NC}"
-        break
-    fi
-    COUNT=$((COUNT + 1))
-    echo -e "${COLOR_LIGHT_YELLOW}Waiting for database... (attempt $COUNT/$MAX_TRIES)${COLOR_NC}"
-    sleep 2
-done
+# Generate .env file from environment variables
+echo "Generating .env configuration file..."
+cat > /var/www/uvdesk/.env <<EOF
+###> symfony/framework-bundle ###
+APP_ENV=${APP_ENV:-dev}
+APP_SECRET=${APP_SECRET}
+###< symfony/framework-bundle ###
 
-if [ $COUNT -eq $MAX_TRIES ]; then
-    echo -e "${COLOR_RED}ERROR: Database did not become ready in time${COLOR_NC}"
-    exit 1
+###> doctrine/doctrine-bundle ###
+DATABASE_URL=${DATABASE_URL:-mysql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_DATABASE}?serverVersion=8.0}
+###< doctrine/doctrine-bundle ###
+
+###> symfony/mailer ###
+MAILER_DSN=${MAILER_DSN:-null://null}
+###< symfony/mailer ###
+
+###> redis configuration ###
+REDIS_HOST=${REDIS_HOST}
+REDIS_PORT=${REDIS_PORT}
+REDIS_PASSWORD=${REDIS_PASSWORD}
+REDIS_DB=${REDIS_DB:-0}
+REDIS_URL=${REDIS_URL:-redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/${REDIS_DB}}
+###< redis configuration ###
+
+###> cache/session/queue configuration ###
+CACHE_DRIVER=${CACHE_DRIVER:-file}
+SESSION_DRIVER=${SESSION_DRIVER:-file}
+QUEUE_CONNECTION=${QUEUE_CONNECTION:-sync}
+###< cache/session/queue configuration ###
+EOF
+
+# Set proper ownership and permissions
+echo "Setting file permissions..."
+chown uvdesk:uvdesk /var/www/uvdesk/.env
+chmod 644 /var/www/uvdesk/.env
+
+# Ensure necessary directories exist with correct permissions
+mkdir -p /var/www/uvdesk/var/cache \
+    /var/www/uvdesk/var/log \
+    /var/www/uvdesk/var/sessions \
+    /var/www/uvdesk/config/packages \
+    /var/www/uvdesk/public/uploads
+
+chown -R uvdesk:uvdesk /var/www/uvdesk/var \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public
+
+chmod -R 775 /var/www/uvdesk/var \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public
+
+# Clear Symfony cache if console exists
+if [ -f /var/www/uvdesk/bin/console ]; then
+    echo "Clearing Symfony cache..."
+    cd /var/www/uvdesk
+    gosu uvdesk php bin/console cache:clear --no-warmup --no-optional-warmers 2>/dev/null || echo "Cache clear skipped (not yet installed)"
 fi
 
-# -----------------------------
-# Fix permissions for UVDesk
-# -----------------------------
-echo -e "${COLOR_GREEN}Fixing permissions...${COLOR_NC}"
-mkdir -p /var/www/uvdesk/{var,config,public,migrations}
-chown -R uvdesk:uvdesk /var/www/uvdesk
-chmod -R 775 /var/www/uvdesk/var /var/www/uvdesk/config /var/www/uvdesk/public /var/www/uvdesk/migrations /var/www/uvdesk/.env 2>/dev/null || true
+# Set proper Apache permissions
+echo "Setting Apache permissions..."
+mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2
+touch /var/log/apache2/error.log /var/log/apache2/access.log
+chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2
+chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
 
-# -----------------------------
-# Fix Apache log permissions
-# -----------------------------
-echo -e "${COLOR_GREEN}Fixing Apache log permissions...${COLOR_NC}"
-mkdir -p /var/log/apache2
-touch /var/log/apache2/error.log /var/log/apache2/access.log /var/log/apache2/other_vhosts_access.log
-chown -R uvdesk:uvdesk /var/log/apache2
-chmod -R 775 /var/log/apache2
+echo "=========================================="
+echo "Configuration complete!"
+echo "Database: ${DB_HOST}:${DB_PORT}/${DB_DATABASE}"
+echo "Redis: ${REDIS_HOST}:${REDIS_PORT}"
+echo "Cache Driver: ${CACHE_DRIVER}"
+echo "Session Driver: ${SESSION_DRIVER}"
+echo "Queue Connection: ${QUEUE_CONNECTION}"
+echo "=========================================="
+echo "Starting Apache..."
+echo "=========================================="
 
-# Fix Apache run directory permissions
-mkdir -p /var/run/apache2
-chown -R uvdesk:uvdesk /var/run/apache2
-chmod -R 775 /var/run/apache2
-
-# Fix Apache lock directory permissions
-mkdir -p /var/lock/apache2
-chown -R uvdesk:uvdesk /var/lock/apache2
-chmod -R 775 /var/lock/apache2
-
-# -----------------------------
-# Start Apache in foreground
-# -----------------------------
-echo -e "${COLOR_GREEN}Starting Apache on port ${UV_APACHE_PORT:-80}...${COLOR_NC}"
-
-# Replace Listen port in Apache config dynamically if needed
-if [ ! -z "$UV_APACHE_PORT" ]; then
-    sed -i "s/Listen 80/Listen $UV_APACHE_PORT/g" /etc/apache2/ports.conf
-    sed -i "s/<VirtualHost \*:80>/<VirtualHost *:$UV_APACHE_PORT>/g" /etc/apache2/sites-available/000-default.conf
-fi
-
-# Run Apache as uvdesk user
-exec gosu uvdesk apachectl -D FOREGROUND
+# Execute the command passed to the container
+exec "$@"
