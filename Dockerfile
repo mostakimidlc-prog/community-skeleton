@@ -3,7 +3,7 @@ LABEL maintainer="support@uvdesk.com"
 
 ENV GOSU_VERSION=1.11
 
-# Install base supplementary packages
+# Install base supplementary packages (WITHOUT mysql-server)
 RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y software-properties-common && \
@@ -16,7 +16,7 @@ RUN apt-get update && \
         git \
         unzip \
         apache2 \
-        mysql-server \
+        mysql-client \
         php8.1 \
         libapache2-mod-php8.1 \
         php8.1-common \
@@ -72,19 +72,19 @@ RUN wget -O /usr/local/bin/composer.php "https://getcomposer.org/installer" && \
 WORKDIR /var/www/uvdesk
 
 # Install Composer dependencies
-RUN cd /var/www/uvdesk/ && composer install
+RUN cd /var/www/uvdesk/ && composer install --no-interaction --no-scripts
 
 # Set correct permissions for UVDesk files
-RUN chown -R uvdesk:uvdesk /var/www/uvdesk && \
-    chmod -R 775 /var/www/uvdesk/var \
-                 /var/www/uvdesk/config \
-                 /var/www/uvdesk/public \
-                 /var/www/uvdesk/migrations \
-                 /var/www/uvdesk/.env
+RUN mkdir -p /var/www/uvdesk/{var,config,public,migrations} \
+    && chown -R uvdesk:uvdesk /var/www/uvdesk \
+    && chmod -R 775 /var/www/uvdesk || true
 
-RUN composer dump-autoload --optimize && \
-    php bin/console cache:clear --env=prod --no-debug || true
+# Set up Apache log and runtime directories with proper permissions
+RUN mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2 \
+    && touch /var/log/apache2/error.log /var/log/apache2/access.log \
+    && chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2 \
+    && chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
 
 # Entry point for the container
 ENTRYPOINT ["/usr/local/bin/uvdesk-entrypoint.sh"]
-CMD ["/bin/bash"]
+CMD ["apachectl", "-D", "FOREGROUND"]

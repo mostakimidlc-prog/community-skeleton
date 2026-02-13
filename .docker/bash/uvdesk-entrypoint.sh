@@ -1,45 +1,84 @@
 #!/bin/bash
+set -e
 
-# Output color codes
-# https://en.wikipedia.org/wiki/ANSI_escape_code
+# -----------------------------
+# Color codes for output
+# -----------------------------
+COLOR_NC='\033[0m'
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_LIGHT_YELLOW='\033[1;33m'
 
-declare -r COLOR_NC='\033[0m'
-declare -r COLOR_RED='\033[0;31m'
-declare -r COLOR_GREEN='\033[0;32m'
-declare -r COLOR_LIGHT_GREEN='\033[1;32m'
-declare -r COLOR_YELLOW='\033[1;33m'
-declare -r COLOR_LIGHT_YELLOW='\033[0;33m'
-declare -r COLOR_BLUE='\033[0;34m'
-declare -r COLOR_LIGHT_BLUE='\033[1;34m'
+# -----------------------------
+# Required environment variables
+# -----------------------------
+: "${DB_HOST:=db}"
+: "${DB_PORT:=3306}"
+: "${DB_DATABASE:=uvdesk}"
+: "${DB_USERNAME:=uvdesk}"
+: "${DB_PASSWORD:=uvdesk_password}"
+: "${UV_SESSION_COOKIE_LIFETIME:=3600}"
 
-# Restart apache & mysql server
-service apache2 restart && service mysql restart;
+# -----------------------------
+# Wait for external MySQL database to be ready
+# -----------------------------
+echo -e "${COLOR_GREEN}Waiting for database at ${DB_HOST}:${DB_PORT}...${COLOR_NC}"
 
-if [[ ! -z "$MYSQL_USER" && ! -z "$MYSQL_PASSWORD" && ! -z "$MYSQL_DATABASE" ]]; then
-    if [ "$(mysqladmin ping)" == "mysqld is alive" ]; then
-        # Mysql is up and running with default configuration
+MAX_TRIES=30
+COUNT=0
 
-        # Create default database if not found and grant non-root user all privileges to that database
-        # Note: Grant privileges will create user if it doesn't exists prior to mysql 8
-        mysql -u root -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DATABASE";
-        mysql -u root -e "GRANT ALL PRIVILEGES ON $MYSQL_DATABASE.* To '$MYSQL_USER'@'localhost' IDENTIFIED BY '$MYSQL_PASSWORD'";
-
-        # Update root user credentials
-        mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_ROOT_PASSWORD'";
-
-        # Create new mysql configuration files (root & uvdesk)
-        rm -f /etc/mysql/my.cnf /home/uvdesk/.my.cnf \
-            && echo -e "[client]\nuser = root\npassword = $MYSQL_ROOT_PASSWORD\nhost = localhost" >> /etc/mysql/my.cnf \
-            && echo -e "[client]\nuser = $MYSQL_USER\npassword = $MYSQL_PASSWORD\nhost = localhost" >> /home/uvdesk/.my.cnf;
-    else
-        echo -e "${COLOR_RED}Error: Failed to establish a connection with mysql server (localhost)${COLOR_NC}\n";
-        exit 1;
+while [ $COUNT -lt $MAX_TRIES ]; do
+    if mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USERNAME" -p"$DB_PASSWORD" --silent 2>/dev/null; then
+        echo -e "${COLOR_GREEN}Database is ready!${COLOR_NC}"
+        break
     fi
-else
-    echo -e "${COLOR_LIGHT_YELLOW}Notice: Skipping configuration of local database - one or more mysql environment variables are not defined.${COLOR_NC}\n";
+    COUNT=$((COUNT + 1))
+    echo -e "${COLOR_LIGHT_YELLOW}Waiting for database... (attempt $COUNT/$MAX_TRIES)${COLOR_NC}"
+    sleep 2
+done
+
+if [ $COUNT -eq $MAX_TRIES ]; then
+    echo -e "${COLOR_RED}ERROR: Database did not become ready in time${COLOR_NC}"
+    exit 1
 fi
 
-# Step down from sudo to uvdesk
-/usr/local/bin/gosu uvdesk "$@"
+# -----------------------------
+# Fix permissions for UVDesk
+# -----------------------------
+echo -e "${COLOR_GREEN}Fixing permissions...${COLOR_NC}"
+mkdir -p /var/www/uvdesk/{var,config,public,migrations}
+chown -R uvdesk:uvdesk /var/www/uvdesk
+chmod -R 775 /var/www/uvdesk/var /var/www/uvdesk/config /var/www/uvdesk/public /var/www/uvdesk/migrations /var/www/uvdesk/.env 2>/dev/null || true
 
-exec "$@"
+# -----------------------------
+# Fix Apache log permissions
+# -----------------------------
+echo -e "${COLOR_GREEN}Fixing Apache log permissions...${COLOR_NC}"
+mkdir -p /var/log/apache2
+touch /var/log/apache2/error.log /var/log/apache2/access.log /var/log/apache2/other_vhosts_access.log
+chown -R uvdesk:uvdesk /var/log/apache2
+chmod -R 775 /var/log/apache2
+
+# Fix Apache run directory permissions
+mkdir -p /var/run/apache2
+chown -R uvdesk:uvdesk /var/run/apache2
+chmod -R 775 /var/run/apache2
+
+# Fix Apache lock directory permissions
+mkdir -p /var/lock/apache2
+chown -R uvdesk:uvdesk /var/lock/apache2
+chmod -R 775 /var/lock/apache2
+
+# -----------------------------
+# Start Apache in foreground
+# -----------------------------
+echo -e "${COLOR_GREEN}Starting Apache on port ${UV_APACHE_PORT:-80}...${COLOR_NC}"
+
+# Replace Listen port in Apache config dynamically if needed
+if [ ! -z "$UV_APACHE_PORT" ]; then
+    sed -i "s/Listen 80/Listen $UV_APACHE_PORT/g" /etc/apache2/ports.conf
+    sed -i "s/<VirtualHost \*:80>/<VirtualHost *:$UV_APACHE_PORT>/g" /etc/apache2/sites-available/000-default.conf
+fi
+
+# Run Apache as uvdesk user
+exec gosu uvdesk apachectl -D FOREGROUND

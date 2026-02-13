@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: uvdesk-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: uvdesk
+      MYSQL_USER: uvdesk
+      MYSQL_PASSWORD: uvdesk_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "uvdesk", "-puvdesk_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    image: mostakim/uvdesk:latest
+    container_name: uvdesk-app
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_NAME: UVDesk
+      APP_ENV: local
+      APP_DEBUG: 'true'
+      APP_URL: http://localhost:8082
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: uvdesk
+      DB_USERNAME: uvdesk
+      DB_PASSWORD: uvdesk_password
+      UV_SESSION_COOKIE_LIFETIME: 3600
+    ports:
+      - "8082:80"
+    # volumes:
+    #   - ./:/var/www/uvdesk
+    # Note: Volume mount disabled to preserve vendor/ directory from image
+
+volumes:
+  db_data:
