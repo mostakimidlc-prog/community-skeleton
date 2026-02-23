@@ -1,25 +1,12 @@
 FROM ubuntu:latest
 LABEL maintainer="support@uvdesk.com"
 
-# --- PROXY CONFIGURATION ---
-# Define build arguments so you can pass them during 'docker build'
-ARG http_proxy=http://192.168.111.21:8080
-ARG https_proxy=http://192.168.111.21:8080
-
-# Set environment variables for the build process (wget, curl, git use these)
-ENV http_proxy=$http_proxy
-ENV https_proxy=$https_proxy
 ENV GOSU_VERSION=1.11
 
-# 1. Configure APT to use the proxy
-RUN echo "Acquire::http::Proxy \"$http_proxy\";" > /etc/apt/apt.conf.d/99proxy && \
-    echo "Acquire::https::Proxy \"$https_proxy\";" >> /etc/apt/apt.conf.d/99proxy
-
-# Install base supplementary packages
+# Install base supplementary packages (WITHOUT mysql-server, WITH redis extension)
 RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y software-properties-common && \
-    # add-apt-repository needs special handling in some proxy envs
     add-apt-repository -y ppa:ondrej/php && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get -y install \
@@ -55,27 +42,33 @@ COPY ./.docker/config/apache2/env /etc/apache2/envvars
 COPY ./.docker/config/apache2/httpd.conf /etc/apache2/apache2.conf
 COPY ./.docker/config/apache2/vhost.conf /etc/apache2/sites-available/000-default.conf
 
-# Copy source code
+# Copy source code (excluding .env which will be generated)
 COPY --chown=uvdesk:uvdesk . /var/www/uvdesk/
 
-# Update Apache configurations
+# Update Apache configurations and enable modules
 RUN a2enmod php8.1 rewrite && \
     a2enmod headers && \
     a2enmod expires
 
-# Install GOSU (Note: gpg --keyserver often fails behind proxies)
+# Install GOSU for stepping down from root
 RUN dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" && \
     wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch" && \
     wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc" && \
-    # Using the keyserver via proxy usually requires --keyserver-options http-proxy
-    gpg --batch --keyserver hkps://keys.openpgp.org --keyserver-options http-proxy=$http_proxy --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4 && \
+    gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4 && \
     gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu && \
     gpgconf --kill all && \
     chmod +x /usr/local/bin/gosu && \
+    gosu nobody true && \
     rm -rf /usr/local/bin/gosu.asc
 
 # Install Composer
 RUN wget -O /usr/local/bin/composer.php "https://getcomposer.org/installer" && \
+    actualSig="$(wget -q -O - https://composer.github.io/installer.sig)" && \
+    currentSig="$(sha384sum /usr/local/bin/composer.php | awk '{print $1}')" && \
+    if [ "$currentSig" != "$actualSig" ]; then \
+        echo "Warning: Failed to verify composer signature."; \
+        exit 1; \
+    fi && \
     php /usr/local/bin/composer.php --quiet --filename=/usr/local/bin/composer && \
     chmod +x /usr/local/bin/composer && \
     rm -f /usr/local/bin/composer.php
@@ -83,36 +76,38 @@ RUN wget -O /usr/local/bin/composer.php "https://getcomposer.org/installer" && \
 # Set working directory
 WORKDIR /var/www/uvdesk
 
-# 2. Configure Composer to use proxy and install dependencies
+# Install Composer dependencies as uvdesk user
 RUN chown -R uvdesk:uvdesk /var/www/uvdesk && \
-    gosu uvdesk composer config -g http-proxy $http_proxy && \
-    gosu uvdesk composer config -g https-proxy $https_proxy && \
     gosu uvdesk composer install --no-interaction --no-scripts --prefer-dist
 
-# Install predis
+# Install predis (Redis client for PHP)
 RUN gosu uvdesk composer require predis/predis --no-interaction --no-scripts
 
-# Set correct permissions
-RUN mkdir -p /var/www/uvdesk/var/cache /var/www/uvdesk/var/log /var/www/uvdesk/var/sessions /var/www/uvdesk/config /var/www/uvdesk/public /var/www/uvdesk/migrations && \
+# Set correct permissions for UVDesk files and directories
+RUN mkdir -p /var/www/uvdesk/var/cache \
+    /var/www/uvdesk/var/log \
+    /var/www/uvdesk/var/sessions \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public \
+    /var/www/uvdesk/migrations && \
     chown -R uvdesk:uvdesk /var/www/uvdesk && \
-    chmod -R 775 /var/www/uvdesk/var /var/www/uvdesk/config /var/www/uvdesk/public
+    chmod -R 775 /var/www/uvdesk/var \
+    /var/www/uvdesk/config \
+    /var/www/uvdesk/public
 
-# Set up Apache directories
+# Set up Apache log and runtime directories with proper permissions
 RUN mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
+    touch /var/log/apache2/error.log /var/log/apache2/access.log && \
     chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
     chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
 
-# 3. Remove build-time proxy config from APT so the final image is clean
-RUN rm /etc/apt/apt.conf.d/99proxy
-
-# Unset ENV variables so the running container doesn't force traffic through the proxy unless intended
-ENV http_proxy=
-ENV https_proxy=
-
+# Copy and set up entrypoint script
 COPY ./.docker/bash/uvdesk-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/uvdesk-entrypoint.sh
 
+# Expose port 80
 EXPOSE 80
 
+# Entry point for the container
 ENTRYPOINT ["/usr/local/bin/uvdesk-entrypoint.sh"]
 CMD ["apachectl", "-D", "FOREGROUND"]
