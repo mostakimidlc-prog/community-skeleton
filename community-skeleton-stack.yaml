@@ -1,0 +1,237 @@
+---
+# 1. Persistent Volume (Points to your project PVC directory)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: uvdesk-local-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-path
+  hostPath:
+    path: /home/mostakim/projects/pvc/community-skeleton
+---
+# 2. Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uvdesk-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: uvdesk-local-pv
+---
+# 3. MySQL Database (Version 8.0)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uvdesk-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: uvdesk-db
+  template:
+    metadata:
+      labels:
+        app: uvdesk-db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "root_password"
+        - name: MYSQL_DATABASE
+          value: "uvdesk"
+        - name: MYSQL_USER
+          value: "uvdesk"
+        - name: MYSQL_PASSWORD
+          value: "uvdesk_password"
+        ports:
+        - containerPort: 3306
+        readinessProbe:
+          exec:
+            command: ["mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_password"]
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 6
+        volumeMounts:
+        - name: storage
+          subPath: mysql-data
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: uvdesk-pvc
+---
+# 4. Redis (Version 8.6)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uvdesk-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: uvdesk-redis
+  template:
+    metadata:
+      labels:
+        app: uvdesk-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:8.6-alpine
+        command: ["redis-server", "--appendonly", "yes", "--requirepass", "uvdesk_redis_pass"]
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "-a", "uvdesk_redis_pass", "ping"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+        - name: storage
+          subPath: redis-data
+          mountPath: /data
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: uvdesk-pvc
+---
+# 5. UVDesk App
+# NOTE: replicas=1 required because PVC is ReadWriteOnce (can only bind to 1 node)
+# For multiple replicas, change PVC accessMode to ReadWriteMany (requires NFS/Longhorn)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uvdesk-app
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: uvdesk-app
+  template:
+    metadata:
+      labels:
+        app: uvdesk-app
+    spec:
+      containers:
+      - name: app
+        image: localhost:5000/mostakimidlc/community-skeleton:latest
+        imagePullPolicy: Always
+        env:
+        - name: APP_NAME
+          value: "UVDesk"
+        - name: APP_ENV
+          value: "dev"
+        - name: APP_DEBUG
+          value: "true"
+        - name: APP_URL
+          value: "http://localhost:30072"
+        - name: APP_SECRET
+          value: "b2f75c4f0c97cc38f56deae639716055e8a888707d7e5bf9248e5465eef971b3"
+        - name: UV_SESSION_COOKIE_LIFETIME
+          value: "3600"
+        - name: DB_HOST
+          value: "db"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_DATABASE
+          value: "uvdesk"
+        - name: DB_USERNAME
+          value: "uvdesk"
+        - name: DB_PASSWORD
+          value: "uvdesk_password"
+        - name: DATABASE_URL
+          value: "mysql://uvdesk:uvdesk_password@db:3306/uvdesk?serverVersion=8.0"
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          value: "uvdesk_redis_pass"
+        - name: REDIS_DB
+          value: "0"
+        - name: REDIS_URL
+          value: "redis://:uvdesk_redis_pass@redis:6379/0"
+        - name: MAILER_DSN
+          value: "null://null"
+        - name: CACHE_DRIVER
+          value: "file"
+        - name: SESSION_DRIVER
+          value: "file"
+        - name: QUEUE_CONNECTION
+          value: "sync"
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 40
+          periodSeconds: 10
+          failureThreshold: 6
+        volumeMounts:
+        - name: storage
+          subPath: uvdesk-var
+          mountPath: /var/www/uvdesk/var
+        - name: storage
+          subPath: uvdesk-config
+          mountPath: /var/www/uvdesk/config
+        - name: storage
+          subPath: uvdesk-public
+          mountPath: /var/www/uvdesk/public
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: uvdesk-pvc
+---
+# 6. Services
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: uvdesk-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: uvdesk-redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uvdesk-service
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30072
+  selector:
+    app: uvdesk-app

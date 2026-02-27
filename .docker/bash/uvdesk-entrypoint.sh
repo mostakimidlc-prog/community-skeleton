@@ -87,6 +87,24 @@ echo "Setting file permissions..."
 chown uvdesk:uvdesk /var/www/uvdesk/.env
 chmod 644 /var/www/uvdesk/.env
 
+# Seed config volume on first run (PVC is empty initially on k8s/k3s)
+if [ ! -f /var/www/uvdesk/config/bundles.php ]; then
+    echo "Config directory is empty, seeding from image backup..."
+    cp -rn /var/www/uvdesk/config.bak/. /var/www/uvdesk/config/
+    chown -R uvdesk:uvdesk /var/www/uvdesk/config
+    chmod -R 775 /var/www/uvdesk/config
+    echo "✓ Config seeded!"
+fi
+
+# Seed public volume on first run (PVC is empty initially on k8s/k3s)
+if [ ! -f /var/www/uvdesk/public/index.php ]; then
+    echo "Public directory is empty, seeding from image backup..."
+    cp -rn /var/www/uvdesk/public.bak/. /var/www/uvdesk/public/
+    chown -R uvdesk:uvdesk /var/www/uvdesk/public
+    chmod -R 775 /var/www/uvdesk/public
+    echo "✓ Public seeded!"
+fi
+
 # Ensure necessary directories exist
 mkdir -p /var/www/uvdesk/var/cache \
     /var/www/uvdesk/var/log \
@@ -102,7 +120,8 @@ if [ -f /var/www/uvdesk/bin/console ]; then
     echo "Clearing Symfony cache..."
     cd /var/www/uvdesk
     gosu uvdesk php bin/console cache:clear --no-warmup 2>/dev/null || echo "Cache clear skipped"
-    gosu uvdesk php bin/console assets:install public --symlink 2>/dev/null || gosu uvdesk php bin/console assets:install public || echo "Assets install skipped"
+    gosu uvdesk php bin/console assets:install public --symlink 2>/dev/null || \
+    gosu uvdesk php bin/console assets:install public 2>/dev/null || echo "Assets install skipped"
 fi
 
 # Set proper Apache permissions

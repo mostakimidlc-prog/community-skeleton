@@ -95,6 +95,10 @@ RUN mkdir -p /var/www/uvdesk/var/cache \
     /var/www/uvdesk/config \
     /var/www/uvdesk/public
 
+# Backup config and public for volume seeding on first run (k8s/k3s PVC support)
+RUN cp -r /var/www/uvdesk/config /var/www/uvdesk/config.bak && \
+    cp -r /var/www/uvdesk/public /var/www/uvdesk/public.bak
+
 # Set up Apache log and runtime directories with proper permissions
 RUN mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
     touch /var/log/apache2/error.log /var/log/apache2/access.log && \
