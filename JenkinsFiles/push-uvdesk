@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    environment {
+        // --- MANUAL UPDATES HERE ---
+        LOCAL_BUILD_IMAGE = "mostakim/community-skeleton:latest" // The image name currently on your disk
+        REPO_NAME         = "community-skeleton"
+        IMAGE_TAG         = "latest"
+        
+        // --- DOCKER HUB CONFIG ---
+        DOCKER_USER       = "mostakimidlc"
+        DOCKER_CREDS_ID   = "dockerhub-creds"
+        
+        // --- LOCAL REGISTRY CONFIG ---
+        LOCAL_REGISTRY    = "localhost:5000"
+        REGISTRY_DATA     = "/home/mostakim/docker-registry-data"
+        
+        // This is the "Correct" tag for Hub: mostakimidlc/glpi:latest
+        HUB_IMAGE_NAME    = "${DOCKER_USER}/${REPO_NAME}:${IMAGE_TAG}"
+    }
+
+    stages {
+        stage('Prepare Tags') {
+            steps {
+                echo "Retagging ${LOCAL_BUILD_IMAGE} to ${HUB_IMAGE_NAME}..."
+                sh "docker tag ${LOCAL_BUILD_IMAGE} ${HUB_IMAGE_NAME}"
+            }
+        }
+
+        stage('Ensure Local Registry') {
+            steps {
+                script {
+                    def containerExists = sh(script: "docker ps -a -q -f name=registry", returnStdout: true).trim()
+                    if (!containerExists) {
+                        sh "sudo mkdir -p ${REGISTRY_DATA}"
+                        sh "docker run -d -p 5000:5000 --restart=always --name registry -v ${REGISTRY_DATA}:/var/lib/registry registry:2"
+                    } else {
+                        sh "docker start registry || true"
+                    }
+                }
+            }
+        }
+
+        stage('Push to Local Registry') {
+            steps {
+                echo "Pushing to Local Registry..."
+                sh """
+                    docker tag ${HUB_IMAGE_NAME} ${LOCAL_REGISTRY}/${HUB_IMAGE_NAME}
+                    docker push ${LOCAL_REGISTRY}/${HUB_IMAGE_NAME}
+                """
+            }
+        }
+
+        /* // --- TO ENABLE DOCKER HUB, UNCOMMENT THIS SECTION ---
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDS_ID}", passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER_ENV')]) {
+                    sh """
+                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER_ENV --password-stdin
+                        docker push ${HUB_IMAGE_NAME}
+                        docker logout
+                    """
+                }
+            }
+        }
+        */
+    }
+
+    post {
+        success {
+            echo "Successfully processed: ${HUB_IMAGE_NAME}"
+            sh "du -sh ${REGISTRY_DATA} || true"
+        }
+    }
+}
