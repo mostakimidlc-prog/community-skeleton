@@ -10,7 +10,7 @@ wait_for_db() {
     echo "Waiting for MySQL database to be ready..."
     local max_attempts=60
     local attempt=0
-    
+
     while [ $attempt -lt $max_attempts ]; do
         if mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USERNAME" -p"$DB_PASSWORD" --silent 2>/dev/null; then
             echo "✓ Database is ready!"
@@ -20,7 +20,7 @@ wait_for_db() {
         echo "  Waiting for database... ($attempt/$max_attempts)"
         sleep 2
     done
-    
+
     echo "✗ Database connection timeout!"
     return 1
 }
@@ -30,7 +30,7 @@ wait_for_redis() {
     echo "Waiting for Redis to be ready..."
     local max_attempts=30
     local attempt=0
-    
+
     while [ $attempt -lt $max_attempts ]; do
         if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping > /dev/null 2>&1; then
             echo "✓ Redis is ready!"
@@ -40,7 +40,7 @@ wait_for_redis() {
         echo "  Waiting for Redis... ($attempt/$max_attempts)"
         sleep 2
     done
-    
+
     echo "⚠ Redis connection timeout! Continuing anyway..."
     return 0
 }
@@ -56,6 +56,8 @@ cat > /var/www/uvdesk/.env <<EOF
 APP_ENV=${APP_ENV:-dev}
 APP_SECRET=${APP_SECRET}
 ###< symfony/framework-bundle ###
+
+UV_SESSION_COOKIE_LIFETIME=${UV_SESSION_COOKIE_LIFETIME:-3600}
 
 ###> doctrine/doctrine-bundle ###
 DATABASE_URL=${DATABASE_URL:-mysql://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_DATABASE}?serverVersion=8.0}
@@ -85,45 +87,30 @@ echo "Setting file permissions..."
 chown uvdesk:uvdesk /var/www/uvdesk/.env
 chmod 644 /var/www/uvdesk/.env
 
-# Ensure necessary directories exist with correct permissions
+# Ensure necessary directories exist
 mkdir -p /var/www/uvdesk/var/cache \
     /var/www/uvdesk/var/log \
     /var/www/uvdesk/var/sessions \
     /var/www/uvdesk/config/packages \
     /var/www/uvdesk/public/uploads
 
-chown -R uvdesk:uvdesk /var/www/uvdesk/var \
-    /var/www/uvdesk/config \
-    /var/www/uvdesk/public
+chown -R uvdesk:uvdesk /var/www/uvdesk/var /var/www/uvdesk/config /var/www/uvdesk/public
+chmod -R 775 /var/www/uvdesk/var /var/www/uvdesk/config /var/www/uvdesk/public
 
-chmod -R 775 /var/www/uvdesk/var \
-    /var/www/uvdesk/config \
-    /var/www/uvdesk/public
-
-# Clear Symfony cache if console exists
+# Clear Symfony cache
 if [ -f /var/www/uvdesk/bin/console ]; then
     echo "Clearing Symfony cache..."
     cd /var/www/uvdesk
-    gosu uvdesk php bin/console cache:clear --no-warmup --no-optional-warmers 2>/dev/null || echo "Cache clear skipped (not yet installed)"
+    gosu uvdesk php bin/console cache:clear --no-warmup 2>/dev/null || echo "Cache clear skipped"
+    gosu uvdesk php bin/console assets:install public --symlink 2>/dev/null || gosu uvdesk php bin/console assets:install public || echo "Assets install skipped"
 fi
 
 # Set proper Apache permissions
-echo "Setting Apache permissions..."
 mkdir -p /var/log/apache2 /var/run/apache2 /var/lock/apache2
-touch /var/log/apache2/error.log /var/log/apache2/access.log
 chown -R uvdesk:uvdesk /var/log/apache2 /var/run/apache2 /var/lock/apache2
-chmod -R 775 /var/log/apache2 /var/run/apache2 /var/lock/apache2
 
 echo "=========================================="
-echo "Configuration complete!"
-echo "Database: ${DB_HOST}:${DB_PORT}/${DB_DATABASE}"
-echo "Redis: ${REDIS_HOST}:${REDIS_PORT}"
-echo "Cache Driver: ${CACHE_DRIVER}"
-echo "Session Driver: ${SESSION_DRIVER}"
-echo "Queue Connection: ${QUEUE_CONNECTION}"
-echo "=========================================="
-echo "Starting Apache..."
+echo "Configuration complete! Starting Apache..."
 echo "=========================================="
 
-# Execute the command passed to the container
 exec "$@"
