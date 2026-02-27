@@ -167,18 +167,15 @@ class ConfigureHelpdesk extends AbstractController
                 'url' => $connectionUrl,
             ]);
 
-            $entityManager = EntityManager::create($databaseConnection, Setup::createAnnotationMetadataConfiguration(['src/Entity'], false));
+            $entityManager = EntityManager::create($databaseConnection, Setup::createAnnotationMetadataConfiguration(['src/Entity'], true));
             
             // Establish a connection if not active
-            if (false == $databaseConnection->isConnected()) {
-                $databaseConnection->connect();
-            }
 
             // Check if database exists
             $createDatabase = (bool) $request->request->get('createDatabase');
 
             if (
-                ! in_array($request->request->get('database'), $databaseConnection->getSchemaManager()->listDatabases()) 
+                ! in_array($request->request->get('database'), $databaseConnection->createSchemaManager()->listDatabases()) 
                 && false == $createDatabase
             ) {
                 return new JsonResponse([
@@ -255,21 +252,18 @@ class ConfigureHelpdesk extends AbstractController
                 'url' => $connectionUrl,
             ]);
 
-            $entityManager = EntityManager::create($databaseConnection, Setup::createAnnotationMetadataConfiguration(['src/Entity'], false));
+            $entityManager = EntityManager::create($databaseConnection, Setup::createAnnotationMetadataConfiguration(['src/Entity'], true));
 
             // Establish an active connection with database server
-            if (false == $databaseConnection->isConnected()) {
-                $databaseConnection->connect();
-            }
 
             // Check if database exists
-            if (! in_array($database_name, $databaseConnection->getSchemaManager()->listDatabases())) {
+            if (! in_array($database_name, $databaseConnection->createSchemaManager()->listDatabases())) {
                 if (false == $create_database) {
                     throw new \Exception('Database does not exist.');
                 }
                 
                 // Create database
-                $databaseConnection->getSchemaManager()->createDatabase($databaseConnection->getDatabasePlatform()->quoteSingleIdentifier($database_name));
+                $databaseConnection->createSchemaManager()->createDatabase($databaseConnection->getDatabasePlatform()->quoteSingleIdentifier($database_name));
             }
 
             $connectionUrl = strtr(self::DB_URL_TEMPLATE . "/[database]", [
