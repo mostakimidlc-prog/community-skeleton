@@ -1,0 +1,63 @@
+pipeline {
+    agent any
+
+    environment {
+        // --- MANUAL UPDATES HERE ---
+        PROJECT_DIR = "/home/mostakim/projects/community-skeleton"
+        IMAGE_NAME  = "mostakim/community-skeleton"
+        IMAGE_TAG   = "latest"
+        PLATFORM    = "linux/amd64"
+    }
+
+    stages {
+        stage('Verify Docker') {
+            steps {
+                sh 'docker version && docker buildx version'
+            }
+        }
+
+        stage('Prepare Buildx') {
+            steps {
+                sh """
+                    # Create and switch to a dedicated builder
+                    docker buildx create --name mybuilder --use || docker buildx use mybuilder
+                    docker buildx inspect --bootstrap
+                """
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                    cd ${PROJECT_DIR}
+                    docker buildx build \
+                        --platform ${PLATFORM} \
+                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                        --load .
+                """
+            }
+        }
+
+        stage('Verify Image') {
+            steps {
+                sh "docker images | grep ${IMAGE_NAME} || true"
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                echo "Cleaning up Buildx builder..."
+                // Stops and removes the 'mybuilder' instance to free up resources
+                sh "docker buildx rm mybuilder || true"
+            }
+        }
+        success { 
+            echo "Build for ${IMAGE_NAME} Completed Successfully!" 
+        }
+        failure { 
+            echo "Build failed. Check the Dockerfile in ${PROJECT_DIR}." 
+        }
+    }
+}
