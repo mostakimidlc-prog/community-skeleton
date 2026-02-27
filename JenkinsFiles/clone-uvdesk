@@ -1,0 +1,38 @@
+pipeline {
+    agent any
+
+    environment {
+        // --- UPDATE THESE THREE VARIABLES FOR EACH PROJECT ---
+        PROJECT_NAME = "community-skeleton"
+        REPO_URL     = "https://github.com/mostakimidlc-prog/community-skeleton.git"
+        BASE_DIR     = "/home/mostakim/projects"
+        
+        // This combines them automatically for the script logic
+        TARGET_DIR   = "${BASE_DIR}/${PROJECT_NAME}"
+    }
+
+    stages {
+        stage('Sync Repository') {
+            steps {
+                script {
+                    sh """
+                        echo "Target Directory: ${TARGET_DIR}"
+                        
+                        # Ensure the parent directory exists
+                        sudo mkdir -p ${BASE_DIR}
+                        sudo chown -R jenkins:jenkins ${BASE_DIR}
+
+                        # Check if the .git folder exists to verify it's a valid repo
+                        if [ -d "${TARGET_DIR}/.git" ]; then
+                            echo "Updating existing repository in ${TARGET_DIR}..."
+                            cd ${TARGET_DIR} && git pull
+                        else
+                            echo "Cloning new repository from ${REPO_URL}..."
+                            git clone ${REPO_URL} ${TARGET_DIR}
+                        fi
+                    """
+                }
+            }
+        }
+    }
+}
